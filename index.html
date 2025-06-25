@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SIEM - Sistema de Escala de Motoristas</title>
+    <link rel="stylesheet" href="/css/style.css" />
+</head>
+<!-- Botão flutuante -->
+<button id="btn-resetar" title="Limpar dados salvos" class="btn-resetar">♻️ Resetar Escala</button>
+
+<!-- Modal de confirmação -->
+<div id="modal-confirmacao" class="modal-confirmacao">
+    <div class="modal-conteudo">
+        <p>Deseja limpar os dados salvos e recarregar a página?</p>
+        <div class="botoes">
+            <button id="confirmar-reset" class="btn-confirmar">Sim</button>
+            <button id="cancelar-reset" class="btn-cancelar">Cancelar</button>
+        </div>
+    </div>
+</div>
+
+
+<body>
+    <div id="preloader">
+        <div class="preloader-spinner"></div>
+        <p class="preloader-text">Carregando sistema...</p>
+    </div>
+    <div class="container">
+        <h1>Sistema de Escala de Motoristas</h1>
+        <h2>Município de Cedro do Abaeté</h2>
+        <form id="formulario">
+            <label for="mes">Mês:</label>
+            <input type="number" id="mes" min="1" max="12" required />
+
+            <label for="ano">Ano:</label>
+            <input type="number" id="ano" min="2020" max="2100" required />
+
+            <label for="motoristas">Nº de Motoristas:</label>
+            <input type="number" id="motoristas" min="3" max="99" required />
+            <div id="config-rodizio"></div>
+
+            <button type="submit">Gerar Escala</button>
+        </form>
+
+
+        <div id="resultado"></div>
+        <!-- Pop-up lateral para detalhes -->
+        <div id="popup-detalhes">
+            <button id="fechar-popup">❌</button>
+            <div id="conteudo-popup"></div>
+        </div>
+
+        <button id="btn-imprimir" style="margin-top: 20px; display: none;">🖨️ Imprimir Escala</button>
+        <button id="btn-abrir-popup" title="Mostrar detalhes" style="display:none;">📋</button>
+
+        <div id="submit-loader" class="submit-loader">
+            <div class="spinner"></div>
+            <p>Gerando escala, por favor aguarde...</p>
+        </div>
+
+    </div>
+
+
+</body>
+<script src="/javascript/script.js"></script>
+
+</html>
