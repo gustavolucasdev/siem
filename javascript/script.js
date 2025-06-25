@@ -261,16 +261,22 @@ document.getElementById('formulario').addEventListener('submit', function (e) {
             }
         }
 
-        popupHtml += `<tr><td>Motorista ${m}</td><td><strong>${diasTrabalhados[m] * 8} horas</strong></td><td style="font-size: 12px; color: #666;">${detalhamento}</td></tr>`;
+        const horasTrabalhadas = (m === 1 || m === 2) ? diasTrabalhados[m] * 15 : diasTrabalhados[m] * 8;
+        popupHtml += `<tr><td>Motorista ${m}</td><td><strong>${horasTrabalhadas} horas</strong></td><td style="font-size: 12px; color: #666;">${detalhamento}</td></tr>`;
     });
 
     popupHtml += '</tbody></table>';
 
     // Calcular estatísticas
-    const totalHoras = Object.values(diasTrabalhados).reduce((a, b) => a + b * 8, 0);
+    const totalHoras = motoristas.reduce((total, m) => {
+        return total + diasTrabalhados[m] * (m === 1 || m === 2 ? 15 : 8);
+    }, 0);
+
+    const horasIndividuais = motoristas.map(m => diasTrabalhados[m] * (m === 1 || m === 2 ? 15 : 8));
     const mediaHoras = (totalHoras / motoristas.length).toFixed(1);
-    const maxHoras = Math.max(...Object.values(diasTrabalhados)) * 8;
-    const minHoras = Math.min(...Object.values(diasTrabalhados)) * 8;
+    const maxHoras = Math.max(...horasIndividuais);
+    const minHoras = Math.min(...horasIndividuais);
+
 
 
     popupHtml += `<div style="margin-top: 15px; padding: 10px; background: #e8f5e8; border-radius: 6px;">`;
