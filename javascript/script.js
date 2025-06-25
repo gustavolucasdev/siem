@@ -75,6 +75,10 @@ document.getElementById('formulario').addEventListener('submit', function (e) {
 
     let html = '<table><thead><tr><th>Data</th><th>Dia</th><th>Plantão</th><th>Porta</th><th>BH</th><th>BD/DIV/MN/SL</th><th>Folga</th></tr></thead><tbody>';
 
+    let plantaoFdsPorMotorista = {};
+    outrosMotoristas.forEach(m => plantaoFdsPorMotorista[m] = 0);
+
+
     for (let dia = 1; dia <= diasNoMes; dia++) {
         const data = new Date(ano, mes, dia);
         const diaSemana = data.getDay();
@@ -135,6 +139,7 @@ document.getElementById('formulario').addEventListener('submit', function (e) {
                 usadosHoje.add(m);
                 pontuacaoAcumulada[m] += pesos.plantao;
                 diasTrabalhados[m]++;
+                plantaoFdsPorMotorista[m]++;
             });
         } else {
             const disponiveisDomingo = outrosMotoristas.filter(m => !plantaoSabado.includes(m));
@@ -144,6 +149,7 @@ document.getElementById('formulario').addEventListener('submit', function (e) {
                 usadosHoje.add(m);
                 pontuacaoAcumulada[m] += pesos.plantao;
                 diasTrabalhados[m]++;
+                plantaoFdsPorMotorista[m]++;
             });
         }
 
@@ -246,13 +252,15 @@ document.getElementById('formulario').addEventListener('submit', function (e) {
             detalhamento = `${contadorPlantao[m]} plantões`;
         } else {
             // Para outros motoristas, contar por função
-            let plantoesFds = 0;
+            let plantoesFds = plantaoFdsPorMotorista[m];
             let outrosDias = diasTrabalhados[m];
 
-            // Estimar plantões de final de semana (aproximado)
-            const diasUteis = Math.floor(diasNoMes * 5 / 7); // aproximação
-            const finsDesemana = Math.floor(diasNoMes * 2 / 7);
-            plantoesFds = Math.round(pontuacaoAcumulada[m] * 0.1); // aproximação baseada no peso
+            if (plantoesFds > 0) {
+                detalhamento = `${outrosDias - plantoesFds} funções + ${plantoesFds} plantões FDS`;
+            } else {
+                detalhamento = `${outrosDias} funções`;
+            }
+
 
             if (plantoesFds > 0) {
                 detalhamento = `${outrosDias - plantoesFds} funções + ${plantoesFds} plantões FDS`;
@@ -325,7 +333,8 @@ document.getElementById('formulario').addEventListener('submit', function (e) {
         htmlPopup: popupHtml,
         proximaFuncao,
         trabalhouSexta,
-        contadorPlantao
+        contadorPlantao,
+        plantaoFdsPorMotorista
     };
     localStorage.setItem('estadoEscala', JSON.stringify(estadoSalvo));
 
