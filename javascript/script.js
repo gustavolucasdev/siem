@@ -240,7 +240,7 @@ document.getElementById('formulario').addEventListener('submit', function (e) {
     popupHtml += '<div style="background: #f8f9ff; padding: 15px; border-radius: 8px; margin: 10px 0;">';
     popupHtml += '<table><thead><tr><th>Motorista</th><th>Total de Horas</th><th>Detalhamento</th></tr></thead><tbody>';
 
-    motoristas.forEach(m => {
+    outrosMotoristas.forEach(m => {
         let detalhamento = '';
         if (m === 1 || m === 2) {
             detalhamento = `${contadorPlantao[m]} plantões`;
@@ -288,12 +288,13 @@ document.getElementById('formulario').addEventListener('submit', function (e) {
     // Adicionar informações sobre distribuição de plantões
     popupHtml += '<h3 style="margin-top: 20px;">📊 Distribuição de Plantões:</h3>';
     popupHtml += '<div style="background: #e8f5e8; padding: 15px; border-radius: 8px; margin: 10px 0;">';
-    popupHtml += '<table><thead><tr><th>Motorista</th><th>Plantões Realizados</th></tr></thead><tbody>';
-    popupHtml += `<tr><td>Motorista 1</td><td>${contadorPlantao[1]} plantões</td></tr>`;
-    popupHtml += `<tr><td>Motorista 2</td><td>${contadorPlantao[2]} plantões</td></tr>`;
+    popupHtml += '<table><thead><tr><th>Motorista</th><th>Total de Horas</th><th>Plantões Realizados</th></tr></thead><tbody>';
+    popupHtml += `<tr><td>Motorista 1</td><td><strong>${contadorPlantao[1] * 15} horas</strong></td><td>${contadorPlantao[1]} plantões</td></tr>`;
+    popupHtml += `<tr><td>Motorista 2</td><td><strong>${contadorPlantao[2] * 15} horas</strong></td><td>${contadorPlantao[2]} plantões</td></tr>`;
     popupHtml += '</tbody></table>';
     popupHtml += `<p style="margin-top: 10px; font-size: 12px; color: #666;">Diferença: ${Math.abs(contadorPlantao[1] - contadorPlantao[2])} plantão(s)</p>`;
     popupHtml += '</div>';
+
 
     popupHtml += '<h3 style="margin-top: 20px;">⚠️ Configuração para o Próximo Mês:</h3>';
     popupHtml += '<div style="background: #f0f8ff; padding: 15px; border-radius: 8px; margin: 10px 0;">';
@@ -408,6 +409,17 @@ function criarCamposRodizio() {
     html += '<p style="font-size: 11px; color: #888; margin-top: 8px;">💡 Se for o primeiro mês ou não souber, deixe tudo em "Porta (padrão)"</p>';
     configDiv.innerHTML = html;
 }
+['mes', 'ano', 'motoristas'].forEach(id => {
+    document.getElementById(id).addEventListener('input', () => {
+        const mes = parseInt(document.getElementById('mes').value);
+        const ano = parseInt(document.getElementById('ano').value);
+        const motoristas = parseInt(document.getElementById('motoristas').value);
+
+        if (mes >= 1 && mes <= 12 && ano > 0 && motoristas >= 3) {
+            criarCamposRodizio();
+        }
+    });
+});
 
 document.getElementById('motoristas').addEventListener('change', criarCamposRodizio);
 

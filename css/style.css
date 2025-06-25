@@ -18,6 +18,7 @@ h1 {
     text-align: center;
     color: #333;
 }
+
 h2 {
     margin-top: -20px;
     text-align: center;
@@ -329,6 +330,22 @@ th {
 .btn-cancelar:hover {
     background-color: #c0392b;
 }
+
+/* Estado inicial (escondido com altura 0 e opacidade 0) */
+.rodizio-fechado {
+    max-height: 0;
+    opacity: 0;
+    overflow: hidden;
+    transition: all 0.6s ease;
+}
+
+/* Estado visível */
+.rodizio-aberto {
+    max-height: 800px;
+    /* ou algo maior que o conteúdo real */
+    opacity: 1;
+}
+
 
 
 
