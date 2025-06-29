@@ -1,8 +1,9 @@
+// ========================================
+// SIEM - SISTEMA DE ESCALA DE MOTORISTAS
+// ========================================
+
 const preloader = document.getElementById('preloader');
-
-// Define tempo mínimo de exibição (em ms)
 const TEMPO_MINIMO = 1500;
-
 const inicio = Date.now();
 
 window.addEventListener('load', () => {
@@ -13,14 +14,481 @@ window.addEventListener('load', () => {
         if (preloader) {
             preloader.style.opacity = '0';
             preloader.style.visibility = 'hidden';
-            setTimeout(() => {
-                preloader.remove();
-            }, 400); // tempo da transição de fade
+            setTimeout(() => preloader.remove(), 400);
         }
     }, tempoRestante);
 });
 
+// ========================================
+// CLASSE PRINCIPAL - GERENCIADOR DE ESCALA
+// ========================================
 
+class GerenciadorEscala {
+    constructor() {
+        this.escalaAnual = [];
+        this.estadoMotoristas = {};
+        this.contadorPlantao = { 1: 0, 2: 0 };
+        this.ultimoMotoristaPlantao = null;
+        this.trabalhouSextaAnterior = null;
+        this.ordemCiclica = ['porta', 'bh', 'folga', 'bdd', 'plantao_fds'];
+        this.estatisticas = {};
+        // NOVA PROPRIEDADE: Rastrear alocações do último dia processado
+        this.ultimoDiaProcessado = null;
+    }
+
+    // Inicializa estado dos motoristas
+    inicializarMotoristas(totalMotoristas) {
+        this.estadoMotoristas = {};
+        for (let i = 1; i <= totalMotoristas; i++) {
+            this.estadoMotoristas[i] = {
+                proximaFuncao: i <= 2 ? 'plantao_semana' : 'porta',
+                diasTrabalhados: 0,
+                pontuacao: 0,
+                folgasSemana: [],
+                ultimoTrabalho: null,
+                plantoesFds: 0
+            };
+        }
+    }
+
+    // Gera escala anual completa
+    gerarEscalaAnual(ano, totalMotoristas) {
+        this.inicializarMotoristas(totalMotoristas);
+        this.escalaAnual = [];
+
+        for (let mes = 0; mes < 12; mes++) {
+            const diasNoMes = new Date(ano, mes + 1, 0).getDate();
+
+            for (let dia = 1; dia <= diasNoMes; dia++) {
+                const data = new Date(ano, mes, dia);
+                const diaSemana = data.getDay();
+                const escalaHoje = this.processarDia(data, totalMotoristas);
+
+                this.escalaAnual.push({
+                    data: data,
+                    diaSemana: diaSemana,
+                    mes: mes,
+                    dia: dia,
+                    ...escalaHoje
+                });
+            }
+        }
+
+        return this.escalaAnual;
+    }
+
+    // Processa um dia específico
+    processarDia(data, totalMotoristas) {
+        const diaSemana = data.getDay();
+        const motoristas = Array.from({ length: totalMotoristas }, (_, i) => i + 1);
+        const outrosMotoristas = motoristas.filter(m => m > 2);
+
+        let resultado = {
+            plantao: [],
+            porta: [],
+            bh: [],
+            bdd: [],
+            folgas: []
+        };
+
+        // Limpar folgas da semana anterior se for segunda-feira
+        if (diaSemana === 1) {
+            outrosMotoristas.forEach(m => {
+                this.estadoMotoristas[m].folgasSemana = [];
+            });
+        }
+
+        if (diaSemana >= 1 && diaSemana <= 5) {
+            // Dias úteis (Segunda a Sexta)
+            resultado.plantao = this.alocarPlantaoSemana(data);
+            resultado = this.alocarFuncoesDiasUteis(resultado, outrosMotoristas, data);
+        } else {
+            // Fins de semana (Sábado e Domingo)
+            resultado.plantao = this.alocarPlantaoFimSemana(outrosMotoristas, data);
+            resultado.porta = ['-'];
+            resultado.bh = ['-'];
+            resultado.bdd = ['-'];
+            resultado.folgas = ['-'];
+        }
+
+        // SALVAR ÚLTIMO DIA PROCESSADO
+        this.ultimoDiaProcessado = {
+            data: new Date(data),
+            diaSemana: diaSemana,
+            ...resultado
+        };
+
+        return resultado;
+    }
+    // Aloca plantão para dias úteis (motoristas 1 e 2)
+    alocarPlantaoSemana() {
+        const diaSemana = new Date().getDay();
+        let motoristaPlantao;
+
+        // Lógica de alternância inteligente
+        if (diaSemana === 1) { // Segunda-feira
+            if (this.trabalhouSextaAnterior !== null) {
+                motoristaPlantao = this.trabalhouSextaAnterior === 1 ? 2 : 1;
+            } else {
+                motoristaPlantao = this.contadorPlantao[1] <= this.contadorPlantao[2] ? 1 : 2;
+            }
+        } else {
+            // Outros dias da semana - alterna com quem não trabalhou no dia anterior
+            motoristaPlantao = this.ultimoMotoristaPlantao === 1 ? 2 : 1;
+        }
+
+        // Verificação de balanceamento
+        if (Math.abs(this.contadorPlantao[1] - this.contadorPlantao[2]) > 2) {
+            motoristaPlantao = this.contadorPlantao[1] < this.contadorPlantao[2] ? 1 : 2;
+        }
+
+        // Atualizar contadores
+        this.contadorPlantao[motoristaPlantao]++;
+        this.estadoMotoristas[motoristaPlantao].diasTrabalhados++;
+        this.estadoMotoristas[motoristaPlantao].pontuacao += 1;
+        this.ultimoMotoristaPlantao = motoristaPlantao;
+
+        // Salvar se trabalhou na sexta para próxima segunda
+        if (diaSemana === 5) {
+            this.trabalhouSextaAnterior = motoristaPlantao;
+        }
+
+        return [motoristaPlantao];
+    }
+
+    // Aloca plantão para fins de semana (motoristas 3+)
+    alocarPlantaoFimSemana(outrosMotoristas, data) {
+        const disponiveisPlantao = outrosMotoristas.filter(m => {
+            const estado = this.estadoMotoristas[m];
+            // Evita repetição de plantão FDS consecutivo
+            const naoTrabalhouPlantaoFdsConsecutivo = estado.ultimoTrabalho !== 'plantao_fds';
+            // NOVA VERIFICAÇÃO: Evita conflito com dia anterior
+            const naoTemConflitoComOntem = !this.verificarConflitoComDiaAnterior(m, 'plantao', data);
+
+            return naoTrabalhouPlantaoFdsConsecutivo && naoTemConflitoComOntem;
+        });
+
+        // Se não há disponíveis sem conflito, relaxar a regra do dia anterior
+        const motoristasFinal = disponiveisPlantao.length >= 2 ?
+            disponiveisPlantao :
+            outrosMotoristas.filter(m => this.estadoMotoristas[m].ultimoTrabalho !== 'plantao_fds');
+
+        // Ordena por menor pontuação e depois por número do motorista
+        motoristasFinal.sort((a, b) => {
+            const pontuacaoA = this.estadoMotoristas[a].pontuacao;
+            const pontuacaoB = this.estadoMotoristas[b].pontuacao;
+            if (pontuacaoA === pontuacaoB) return a - b;
+            return pontuacaoA - pontuacaoB;
+        });
+
+        const selecionados = motoristasFinal.slice(0, 2);
+
+        selecionados.forEach(m => {
+            this.estadoMotoristas[m].diasTrabalhados++;
+            this.estadoMotoristas[m].pontuacao += 1;
+            this.estadoMotoristas[m].plantoesFds++;
+            this.estadoMotoristas[m].ultimoTrabalho = 'plantao_fds';
+            this.estadoMotoristas[m].proximaFuncao = this.obterProximaFuncao(m);
+        });
+
+        return selecionados;
+    }
+
+    // Aloca funções para dias úteis (motoristas 3+)
+    alocarFuncoesDiasUteis(resultado, outrosMotoristas, data) {
+        const usadosHoje = new Set(resultado.plantao);
+        const disponiveisTrabalho = outrosMotoristas.filter(m => !usadosHoje.has(m));
+
+        // Primeiro, aloca folgas
+        const candidatosFolga = disponiveisTrabalho.filter(m => {
+            const estado = this.estadoMotoristas[m];
+            return estado.folgasSemana.length === 0 ||
+                (estado.folgasSemana.length < 1 && Math.random() > 0.7);
+        });
+
+        if (candidatosFolga.length > 0 && disponiveisTrabalho.length > 6) {
+            candidatosFolga.sort((a, b) => {
+                const pontuacaoA = this.estadoMotoristas[a].pontuacao;
+                const pontuacaoB = this.estadoMotoristas[b].pontuacao;
+                return pontuacaoB - pontuacaoA;
+            });
+
+            const motoristaFolga = candidatosFolga[0];
+            resultado.folgas = [motoristaFolga];
+            usadosHoje.add(motoristaFolga);
+            this.estadoMotoristas[motoristaFolga].folgasSemana.push(data.getDay());
+            this.estadoMotoristas[motoristaFolga].ultimoTrabalho = 'folga';
+        }
+
+        // Alocar funções de trabalho COM VERIFICAÇÃO DE CONFLITO
+        const restantesTrabalho = disponiveisTrabalho.filter(m => !usadosHoje.has(m));
+        const funcoes = { porta: [], bh: [], bdd: [] };
+
+        // Primeiro, tentar alocar sem conflitos
+        const semConflito = restantesTrabalho.filter(m => {
+            const funcaoDesejada = this.estadoMotoristas[m].proximaFuncao;
+            return !this.verificarConflitoComDiaAnterior(m, funcaoDesejada, data);
+        });
+
+        // Se não há motoristas suficientes sem conflito, usar todos
+        const motoristasParaAlocar = semConflito.length >= 6 ? semConflito : restantesTrabalho;
+
+        motoristasParaAlocar.sort((a, b) => {
+            const estadoA = this.estadoMotoristas[a];
+            const estadoB = this.estadoMotoristas[b];
+
+            // Priorizar quem não tem conflito com dia anterior
+            const conflitoA = this.verificarConflitoComDiaAnterior(a, estadoA.proximaFuncao, data);
+            const conflitoB = this.verificarConflitoComDiaAnterior(b, estadoB.proximaFuncao, data);
+
+            if (conflitoA !== conflitoB) {
+                return conflitoA ? 1 : -1; // Sem conflito primeiro
+            }
+
+            if (estadoA.proximaFuncao !== estadoB.proximaFuncao) {
+                const ordemPrioridade = ['porta', 'bh', 'bdd'];
+                return ordemPrioridade.indexOf(estadoA.proximaFuncao) -
+                    ordemPrioridade.indexOf(estadoB.proximaFuncao);
+            }
+
+            if (estadoA.pontuacao === estadoB.pontuacao) return a - b;
+            return estadoA.pontuacao - estadoB.pontuacao;
+        });
+
+        // Distribuir nas funções
+        for (let motorista of motoristasParaAlocar) {
+            const funcaoDesejada = this.estadoMotoristas[motorista].proximaFuncao;
+            const temConflito = this.verificarConflitoComDiaAnterior(motorista, funcaoDesejada, data);
+
+            // Se tem conflito, tentar outra função
+            if (temConflito) {
+                const funcoesAlternativas = ['porta', 'bh', 'bdd'].filter(f =>
+                    f !== funcaoDesejada &&
+                    !this.verificarConflitoComDiaAnterior(motorista, f, data) &&
+                    funcoes[f].length < 2
+                );
+
+                if (funcoesAlternativas.length > 0) {
+                    const funcaoEscolhida = funcoesAlternativas[0];
+                    funcoes[funcaoEscolhida].push(motorista);
+                    this.atualizarEstadoMotorista(motorista, funcaoEscolhida);
+                    continue;
+                }
+            }
+
+            // Alocar na função desejada se possível
+            if (funcoes[funcaoDesejada] && funcoes[funcaoDesejada].length < 2) {
+                funcoes[funcaoDesejada].push(motorista);
+                this.atualizarEstadoMotorista(motorista, funcaoDesejada);
+            } else {
+                // Alocar na primeira função disponível
+                const funcaoDisponivel = Object.keys(funcoes).find(f => funcoes[f].length < 2);
+                if (funcaoDisponivel) {
+                    funcoes[funcaoDisponivel].push(motorista);
+                    this.atualizarEstadoMotorista(motorista, funcaoDisponivel);
+                }
+            }
+        }
+
+        resultado.porta = funcoes.porta;
+        resultado.bh = funcoes.bh;
+        resultado.bdd = funcoes.bdd;
+
+        return resultado;
+    }
+
+    // Atualiza o estado do motorista após alocação
+    atualizarEstadoMotorista(motorista, funcao) {
+        const estado = this.estadoMotoristas[motorista];
+        const pesos = { porta: 1.5, bh: 3, bdd: 2, plantao_fds: 1, folga: 0 };
+
+        estado.diasTrabalhados++;
+        estado.pontuacao += pesos[funcao] || 1;
+        estado.ultimoTrabalho = funcao;
+        estado.proximaFuncao = this.obterProximaFuncao(motorista);
+    }
+
+    // Obtém próxima função na ordem cíclica
+    obterProximaFuncao(motorista) {
+        if (motorista <= 2) return 'plantao_semana';
+
+        const estado = this.estadoMotoristas[motorista];
+        const funcaoAtual = estado.ultimoTrabalho || 'porta';
+        const cicloDinamico = ['porta', 'bh', 'bdd']; // Removemos folga e plantao_fds do ciclo automático
+
+        const indiceAtual = cicloDinamico.indexOf(funcaoAtual);
+        if (indiceAtual === -1) return 'porta';
+
+        return cicloDinamico[(indiceAtual + 1) % cicloDinamico.length];
+    }
+
+    // Calcula estatísticas finais
+    calcularEstatisticas(escalaMes) {
+        this.estatisticas = {
+            totalDias: escalaMes.length,
+            distribuicaoMotoristas: {},
+            balanceamento: {}
+        };
+
+        // Inicializar contadores para cada motorista
+        const contadoresMotoristas = {};
+
+        // Descobrir quantos motoristas existem baseado na escala do mês
+        const todosMotoristas = new Set();
+        escalaMes.forEach(dia => {
+            [...dia.plantao, ...dia.porta, ...dia.bh, ...dia.bdd, ...dia.folgas].forEach(m => {
+                if (m !== '-' && typeof m === 'number') {
+                    todosMotoristas.add(m);
+                }
+            });
+        });
+
+        // Inicializar contadores
+        todosMotoristas.forEach(m => {
+            contadoresMotoristas[m] = {
+                diasTrabalhados: 0,
+                plantoesFds: 0,
+                funcoesSemana: 0
+            };
+        });
+
+        // Contar dias trabalhados no mês
+        escalaMes.forEach(dia => {
+            const diaSemana = dia.diaSemana;
+            const ehFimSemana = diaSemana === 0 || diaSemana === 6;
+
+            // Contar plantões
+            dia.plantao.forEach(m => {
+                if (m !== '-' && typeof m === 'number') {
+                    contadoresMotoristas[m].diasTrabalhados++;
+                    if (ehFimSemana) {
+                        contadoresMotoristas[m].plantoesFds++;
+                    }
+                }
+            });
+
+            // Contar outras funções (porta, bh, bdd)
+            [...dia.porta, ...dia.bh, ...dia.bdd].forEach(m => {
+                if (m !== '-' && typeof m === 'number') {
+                    contadoresMotoristas[m].diasTrabalhados++;
+                    contadoresMotoristas[m].funcoesSemana++;
+                }
+            });
+        });
+
+        // Calcular estatísticas finais
+        Object.keys(contadoresMotoristas).forEach(m => {
+            const motorista = parseInt(m);
+            const dados = contadoresMotoristas[m];
+            const horasTrabalhadas = motorista <= 2 ? dados.diasTrabalhados * 15 : dados.diasTrabalhados * 8;
+
+            this.estatisticas.distribuicaoMotoristas[m] = {
+                diasTrabalhados: dados.diasTrabalhados,
+                horasTrabalhadas: horasTrabalhadas,
+                pontuacao: dados.diasTrabalhados,
+                plantoesFds: dados.plantoesFds,
+                funcoesSemana: dados.funcoesSemana
+            };
+        });
+    }
+
+    verificarConflitoComDiaAnterior(motorista, funcao, dataAtual) {
+        if (!this.ultimoDiaProcessado) return false;
+
+        // Verificar se é o dia seguinte ao último processado
+        const ontem = new Date(dataAtual);
+        ontem.setDate(ontem.getDate() - 1);
+
+        if (ontem.toDateString() === this.ultimoDiaProcessado.data.toDateString()) {
+            // Verificar se o motorista trabalhou ontem na mesma função
+            const trabalhouOntemNaMesmaFuncao = this.verificarTrabalhouOntem(motorista, funcao);
+            return trabalhouOntemNaMesmaFuncao;
+        }
+
+        return false;
+    }
+
+    verificarTrabalhouOntem(motorista, funcao) {
+        if (!this.ultimoDiaProcessado) return false;
+
+        const ultimoDia = this.ultimoDiaProcessado;
+
+        // Verificar em todas as funções do último dia
+        const todasFuncoesOntem = [
+            ...ultimoDia.plantao,
+            ...ultimoDia.porta,
+            ...ultimoDia.bh,
+            ...ultimoDia.bdd
+        ];
+
+        // Se trabalhou ontem, verificar se foi na mesma função
+        if (todasFuncoesOntem.includes(motorista)) {
+            if (funcao === 'plantao' && ultimoDia.plantao.includes(motorista)) return true;
+            if (funcao === 'porta' && ultimoDia.porta.includes(motorista)) return true;
+            if (funcao === 'bh' && ultimoDia.bh.includes(motorista)) return true;
+            if (funcao === 'bdd' && ultimoDia.bdd.includes(motorista)) return true;
+        }
+
+        return false;
+    }
+
+    validarTransicoes() {
+        const problemas = [];
+
+        for (let i = 1; i < this.escalaAnual.length; i++) {
+            const hoje = this.escalaAnual[i];
+            const ontem = this.escalaAnual[i - 1];
+
+            // Verificar se é dia consecutivo
+            const dataOntem = new Date(ontem.data);
+            const dataHoje = new Date(hoje.data);
+            dataOntem.setDate(dataOntem.getDate() + 1);
+
+            if (dataOntem.toDateString() === dataHoje.toDateString()) {
+                // Verificar conflitos
+                const funcoesHoje = {
+                    plantao: hoje.plantao,
+                    porta: hoje.porta,
+                    bh: hoje.bh,
+                    bdd: hoje.bdd
+                };
+
+                const funcoesOntem = {
+                    plantao: ontem.plantao,
+                    porta: ontem.porta,
+                    bh: ontem.bh,
+                    bdd: ontem.bdd
+                };
+
+                Object.keys(funcoesHoje).forEach(funcao => {
+                    const motoristasHoje = funcoesHoje[funcao];
+                    const motoristasOntem = funcoesOntem[funcao];
+
+                    const repeticoes = motoristasHoje.filter(m => motoristasOntem.includes(m));
+                    if (repeticoes.length > 0) {
+                        problemas.push({
+                            data: hoje.data.toLocaleDateString('pt-BR'),
+                            funcao: funcao,
+                            motoristas: repeticoes,
+                            tipo: 'mesma_funcao_consecutiva'
+                        });
+                    }
+                });
+            }
+        }
+
+        return problemas;
+    }
+}
+
+// ========================================
+// INTERFACE E EVENTOS
+// ========================================
+
+// Instância global do gerenciador
+let gerenciador = new GerenciadorEscala();
+
+// Event Listener principal do formulário
 document.getElementById('formulario').addEventListener('submit', function (e) {
     e.preventDefault();
     document.getElementById('submit-loader').style.display = 'flex';
@@ -30,201 +498,71 @@ document.getElementById('formulario').addEventListener('submit', function (e) {
     const totalMotoristas = parseInt(document.getElementById('motoristas').value);
     const resultadoDiv = document.getElementById('resultado');
     const btnAbrirPopup = document.getElementById('btn-abrir-popup');
-    const popupDetalhes = document.getElementById('popup-detalhes');
 
     document.getElementById('btn-imprimir').style.display = 'inline-block';
 
+    // Validação básica
     if (totalMotoristas < 3) {
         resultadoDiv.innerHTML = '<p style="color:red;">É necessário pelo menos 3 motoristas.</p>';
         btnAbrirPopup.style.display = 'none';
+        document.getElementById('submit-loader').style.display = 'none';
         return;
     }
 
-    const diasNoMes = new Date(ano, mes + 1, 0).getDate();
-    const motoristas = Array.from({ length: totalMotoristas }, (_, i) => i + 1);
-    const fixosPlantao = [1, 2];
-    const outrosMotoristas = motoristas.filter(m => !fixosPlantao.includes(m));
+    // Gera escala anual
+    gerenciador.gerarEscalaAnual(ano, totalMotoristas);
 
-    const pesos = {
-        plantao: 1,
-        porta: 1.5,
-        bh: 3,
-        bdd: 2,
+    // Filtra e exibe apenas o mês selecionado
+    const escalaMes = gerenciador.escalaAnual.filter(dia => dia.mes === mes);
+
+    // Calcular estatísticas específicas do mês selecionado
+    gerenciador.calcularEstatisticas(escalaMes);
+
+    const htmlEscala = gerarHtmlEscala(escalaMes);
+    const htmlPopup = gerarHtmlPopup(gerenciador.estatisticas, totalMotoristas);
+
+    resultadoDiv.innerHTML = htmlEscala;
+    document.getElementById('conteudo-popup').innerHTML = htmlPopup;
+
+    // Salvar estado no localStorage
+    const estadoSalvo = {
+        ano,
+        mes,
+        totalMotoristas,
+        htmlEscala,
+        htmlPopup,
+        estatisticas: gerenciador.estatisticas,
+        contadorPlantao: gerenciador.contadorPlantao
     };
+    localStorage.setItem('estadoEscala', JSON.stringify(estadoSalvo));
 
-    let pontuacaoAcumulada = {};
-    let diasTrabalhados = {};
-    motoristas.forEach(m => {
-        pontuacaoAcumulada[m] = 0;
-        diasTrabalhados[m] = 0;
-    });
+    // Mostrar resultados
+    btnAbrirPopup.style.display = 'none';
+    document.getElementById('popup-detalhes').classList.add('open');
 
-    let proximaFuncao = {};
-    outrosMotoristas.forEach(m => {
-        const selectElement = document.getElementById(`motorista${m}_proxima`);
-        proximaFuncao[m] = selectElement ? selectElement.value : 'porta';
-    });
+    setTimeout(() => {
+        document.getElementById('submit-loader').style.display = 'none';
+    }, 600);
+});
 
-    let plantaoSabado = [];
-    let plantaoDomingo = [];
+// ========================================
+// FUNÇÕES DE GERAÇÃO DE HTML
+// ========================================
 
-    // Controle para alternância igualitária entre motoristas 1 e 2
-    let contadorPlantao = { 1: 0, 2: 0 };
-    let ultimoMotoristaPlantao = null;
-    let trabalhouSexta = null; // Para controlar quem trabalhou na sexta
-
+function gerarHtmlEscala(escalaMes) {
     let html = '<table><thead><tr><th>Data</th><th>Dia</th><th>Plantão</th><th>Porta</th><th>BH</th><th>BD/DIV/MN/SL</th><th>Folga</th></tr></thead><tbody>';
 
-    let plantaoFdsPorMotorista = {};
-    outrosMotoristas.forEach(m => plantaoFdsPorMotorista[m] = 0);
-
-
-    for (let dia = 1; dia <= diasNoMes; dia++) {
-        const data = new Date(ano, mes, dia);
-        const diaSemana = data.getDay();
+    escalaMes.forEach(dia => {
+        const data = dia.data;
         const nomeDia = data.toLocaleDateString('pt-BR', { weekday: 'long' });
         const dataFormatada = data.toLocaleDateString('pt-BR');
+        const classeFimSemana = (dia.diaSemana === 0 || dia.diaSemana === 6) ? ' class="linha-fim-semana"' : '';
 
-        let usadosHoje = new Set();
-        let plantao = [];
-        let porta = [];
-        let bh = [];
-        let bdd = [];
-        let folgas = [];
-
-        if (diaSemana >= 1 && diaSemana <= 5) {
-            let motoristaPlantao;
-
-            // Lógica melhorada para distribuição igualitária
-            if (diaSemana === 1) { // Segunda-feira
-                // Se alguém trabalhou na sexta anterior, o outro trabalha na segunda
-                if (trabalhouSexta !== null) {
-                    motoristaPlantao = trabalhouSexta === 1 ? 2 : 1;
-                } else {
-                    // Primeira segunda do mês ou sem controle anterior
-                    motoristaPlantao = contadorPlantao[1] <= contadorPlantao[2] ? 1 : 2;
-                }
-            } else if (diaSemana === 2) { // Terça-feira
-                // Alterna com quem não trabalhou na segunda
-                motoristaPlantao = ultimoMotoristaPlantao === 1 ? 2 : 1;
-            } else if (diaSemana === 3) { // Quarta-feira
-                // Alterna com quem não trabalhou na terça
-                motoristaPlantao = ultimoMotoristaPlantao === 1 ? 2 : 1;
-            } else if (diaSemana === 4) { // Quinta-feira
-                // Alterna com quem não trabalhou na quarta
-                motoristaPlantao = ultimoMotoristaPlantao === 1 ? 2 : 1;
-            } else { // Sexta-feira
-                // Alterna com quem não trabalhou na quinta e lembra para próxima segunda
-                motoristaPlantao = ultimoMotoristaPlantao === 1 ? 2 : 1;
-                trabalhouSexta = motoristaPlantao;
-            }
-
-            // Verificação de segurança para balanceamento
-            if (Math.abs(contadorPlantao[1] - contadorPlantao[2]) > 2) {
-                // Se a diferença for muito grande, força o menos utilizado
-                motoristaPlantao = contadorPlantao[1] < contadorPlantao[2] ? 1 : 2;
-            }
-
-            plantao = [motoristaPlantao];
-            usadosHoje.add(motoristaPlantao);
-            pontuacaoAcumulada[motoristaPlantao] += pesos.plantao;
-            diasTrabalhados[motoristaPlantao]++;
-            contadorPlantao[motoristaPlantao]++;
-            ultimoMotoristaPlantao = motoristaPlantao;
-
-        } else if (diaSemana === 6) {
-            plantaoSabado = selecionarMotoristas(outrosMotoristas, [], 2, pontuacaoAcumulada);
-            plantao = plantaoSabado;
-            plantao.forEach(m => {
-                usadosHoje.add(m);
-                pontuacaoAcumulada[m] += pesos.plantao;
-                diasTrabalhados[m]++;
-                plantaoFdsPorMotorista[m]++;
-            });
-        } else {
-            const disponiveisDomingo = outrosMotoristas.filter(m => !plantaoSabado.includes(m));
-            plantaoDomingo = selecionarMotoristas(disponiveisDomingo, [], 2, pontuacaoAcumulada);
-            plantao = plantaoDomingo;
-            plantao.forEach(m => {
-                usadosHoje.add(m);
-                pontuacaoAcumulada[m] += pesos.plantao;
-                diasTrabalhados[m]++;
-                plantaoFdsPorMotorista[m]++;
-            });
-        }
-
-        if (diaSemana >= 1 && diaSemana <= 5) {
-            const disponiveisParaFuncoes = outrosMotoristas.filter(m => !usadosHoje.has(m));
-
-            if (disponiveisParaFuncoes.length > 6) {
-                const candidatosFolga = disponiveisParaFuncoes.slice();
-                candidatosFolga.sort((a, b) => pontuacaoAcumulada[b] - pontuacaoAcumulada[a]);
-                folgas = [candidatosFolga[0]];
-                usadosHoje.add(candidatosFolga[0]);
-            }
-
-            const restantesParaFuncoes = outrosMotoristas.filter(m => !usadosHoje.has(m));
-            const funcoes = { bh: [], porta: [], bdd: [] };
-            const restantesOrdenados = restantesParaFuncoes.slice();
-
-            restantesOrdenados.sort((a, b) => {
-                if (pontuacaoAcumulada[a] === pontuacaoAcumulada[b]) {
-                    return a - b;
-                }
-                return pontuacaoAcumulada[a] - pontuacaoAcumulada[b];
-            });
-
-            for (let motorista of restantesOrdenados) {
-                if (usadosHoje.has(motorista)) continue;
-                const funcaoDesejada = proximaFuncao[motorista];
-                if (funcoes[funcaoDesejada].length < 2) {
-                    funcoes[funcaoDesejada].push(motorista);
-                    usadosHoje.add(motorista);
-                    diasTrabalhados[motorista]++;
-                    atualizarProximaFuncao(motorista, proximaFuncao);
-                }
-            }
-
-            const disponíveis = restantesParaFuncoes.filter(m => !usadosHoje.has(m));
-            disponíveis.sort((a, b) => {
-                if (pontuacaoAcumulada[a] === pontuacaoAcumulada[b]) {
-                    return a - b;
-                }
-                return pontuacaoAcumulada[a] - pontuacaoAcumulada[b];
-            });
-
-            const ordemFuncoes = ['porta', 'bdd', 'bh'];
-            for (let funcao of ordemFuncoes) {
-                while (funcoes[funcao].length < 2 && disponíveis.length > 0) {
-                    const motorista = disponíveis.shift();
-                    funcoes[funcao].push(motorista);
-                    usadosHoje.add(motorista);
-                    diasTrabalhados[motorista]++;
-                    proximaFuncao[motorista] = obterProximaFuncaoAposAtual(funcao);
-                }
-            }
-
-            bh = funcoes.bh;
-            porta = funcoes.porta;
-            bdd = funcoes.bdd;
-
-            bh.forEach(m => pontuacaoAcumulada[m] += pesos.bh);
-            porta.forEach(m => pontuacaoAcumulada[m] += pesos.porta);
-            bdd.forEach(m => pontuacaoAcumulada[m] += pesos.bdd);
-        } else {
-            porta = ['-'];
-            bh = ['-'];
-            bdd = ['-'];
-            folgas = ['-'];
-        }
-
-        const plantaoTexto = plantao.length ? plantao.join(' e ') : '-';
-        const portaTexto = porta.join(' e ');
-        const bhTexto = bh.join(' e ');
-        const bddTexto = bdd.join(' e ');
-        const folgaTexto = folgas.join(' e ');
-
-        const classeFimSemana = (diaSemana === 0 || diaSemana === 6) ? ' class="linha-fim-semana"' : '';
+        const plantaoTexto = dia.plantao.length ? dia.plantao.join(' e ') : '-';
+        const portaTexto = dia.porta.length ? dia.porta.join(' e ') : '-';
+        const bhTexto = dia.bh.length ? dia.bh.join(' e ') : '-';
+        const bddTexto = dia.bdd.length ? dia.bdd.join(' e ') : '-';
+        const folgaTexto = dia.folgas.length ? dia.folgas.join(' e ') : '-';
 
         html += `<tr${classeFimSemana}>
             <td>${dataFormatada}</td>
@@ -235,244 +573,164 @@ document.getElementById('formulario').addEventListener('submit', function (e) {
             <td>${bddTexto}</td>
             <td>${folgaTexto}</td>
         </tr>`;
-
-    }
+    });
 
     html += '</tbody></table>';
-    resultadoDiv.innerHTML = html;
+    return html;
+}
 
-    // Conteúdo do pop-up lateral
-    let popupHtml = '<h3>📊 Dias Trabalhados por Motorista:</h3>';
-    popupHtml += '<div style="background: #f8f9ff; padding: 15px; border-radius: 8px; margin: 10px 0;">';
-    popupHtml += '<table><thead><tr><th>Motorista</th><th>Total de Horas</th><th>Detalhamento</th></tr></thead><tbody>';
+function gerarHtmlPopup(estatisticas, totalMotoristas) {
+    let html = '<h3>📊 Estatísticas dos Motoristas (Mês Selecionado):</h3>';
+    html += '<div style="background: #f8f9ff; padding: 15px; border-radius: 8px; margin: 10px 0;">';
+    html += '<table><thead><tr><th>Motorista</th><th>Total de Horas</th><th>Detalhamento</th></tr></thead><tbody>';
 
-    outrosMotoristas.forEach(m => {
+    Object.keys(estatisticas.distribuicaoMotoristas).forEach(m => {
+        const motorista = parseInt(m);
+        const dados = estatisticas.distribuicaoMotoristas[m];
+
         let detalhamento = '';
-        if (m === 1 || m === 2) {
-            detalhamento = `${contadorPlantao[m]} plantões`;
+        if (motorista <= 2) {
+            detalhamento = `${dados.diasTrabalhados} plantões no mês`;
         } else {
-            // Para outros motoristas, contar por função
-            let plantoesFds = plantaoFdsPorMotorista[m];
-            let outrosDias = diasTrabalhados[m];
-
-            if (plantoesFds > 0) {
-                detalhamento = `${outrosDias - plantoesFds} funções + ${plantoesFds} plantões FDS`;
+            if (dados.plantoesFds > 0) {
+                detalhamento = `${dados.funcoesSemana} funções + ${dados.plantoesFds} plantões FDS`;
             } else {
-                detalhamento = `${outrosDias} funções`;
-            }
-
-
-            if (plantoesFds > 0) {
-                detalhamento = `${outrosDias - plantoesFds} funções + ${plantoesFds} plantões FDS`;
-            } else {
-                detalhamento = `${outrosDias} funções`;
+                detalhamento = `${dados.funcoesSemana} funções no mês`;
             }
         }
 
-        const horasTrabalhadas = (m === 1 || m === 2) ? diasTrabalhados[m] * 15 : diasTrabalhados[m] * 8;
-        popupHtml += `<tr><td>Motorista ${m}</td><td><strong>${horasTrabalhadas} horas</strong></td><td style="font-size: 12px; color: #666;">${detalhamento}</td></tr>`;
+        html += `<tr>
+            <td>Motorista ${m}</td>
+            <td><strong>${dados.horasTrabalhadas} horas</strong></td>
+            <td style="font-size: 12px; color: #666;">${detalhamento}</td>
+        </tr>`;
     });
 
-    popupHtml += '</tbody></table>';
+    html += '</tbody></table></div>';
 
-    // Calcular estatísticas
-    const totalHoras = motoristas.reduce((total, m) => {
-        return total + diasTrabalhados[m] * (m === 1 || m === 2 ? 15 : 8);
-    }, 0);
-
-    const horasIndividuais = motoristas.map(m => diasTrabalhados[m] * (m === 1 || m === 2 ? 15 : 8));
-    const mediaHoras = (totalHoras / motoristas.length).toFixed(1);
+    // Estatísticas gerais do mês
+    const horasIndividuais = Object.values(estatisticas.distribuicaoMotoristas).map(d => d.horasTrabalhadas);
+    const totalHoras = horasIndividuais.reduce((sum, h) => sum + h, 0);
+    const mediaHoras = (totalHoras / totalMotoristas).toFixed(1);
     const maxHoras = Math.max(...horasIndividuais);
     const minHoras = Math.min(...horasIndividuais);
 
+    html += `<div style="margin-top: 15px; padding: 10px; background: #e8f5e8; border-radius: 6px;">`;
+    html += `<p style="margin: 0; font-size: 12px;"><strong>📈 Estatísticas do Mês:</strong></p>`;
+    html += `<p style="margin: 5px 0 0 0; font-size: 11px; color: #555;">Média: ${mediaHoras} horas • Maior: ${maxHoras} horas • Menor: ${minHoras} horas • Diferença: ${maxHoras - minHoras} horas</p>`;
+    html += `</div>`;
 
+    return html;
+}
 
-    popupHtml += `<div style="margin-top: 15px; padding: 10px; background: #e8f5e8; border-radius: 6px;">`;
-    popupHtml += `<p style="margin: 0; font-size: 12px;"><strong>📈 Estatísticas:</strong></p>`;
-    popupHtml += `<p style="margin: 5px 0 0 0; font-size: 11px; color: #555;">Média: ${mediaHoras} horas • Maior: ${maxHoras} horas • Menor: ${minHoras} horas • Diferença: ${maxHoras - minHoras} horas</p>`;
-    popupHtml += `</div>`;
-    popupHtml += '</div>';
+// ========================================
+// GERENCIAMENTO DE POPUP
+// ========================================
 
-    // Adicionar informações sobre distribuição de plantões
-    popupHtml += '<h3 style="margin-top: 20px;">📊 Distribuição de Plantões:</h3>';
-    popupHtml += '<div style="background: #e8f5e8; padding: 15px; border-radius: 8px; margin: 10px 0;">';
-    popupHtml += '<table><thead><tr><th>Motorista</th><th>Total de Horas</th><th>Plantões Realizados</th></tr></thead><tbody>';
-    popupHtml += `<tr><td>Motorista 1</td><td><strong>${contadorPlantao[1] * 15} horas</strong></td><td>${contadorPlantao[1]} plantões</td></tr>`;
-    popupHtml += `<tr><td>Motorista 2</td><td><strong>${contadorPlantao[2] * 15} horas</strong></td><td>${contadorPlantao[2]} plantões</td></tr>`;
-    popupHtml += '</tbody></table>';
-    popupHtml += `<p style="margin-top: 10px; font-size: 12px; color: #666;">Diferença: ${Math.abs(contadorPlantao[1] - contadorPlantao[2])} plantão(s)</p>`;
-    popupHtml += '</div>';
+const btnAbrirPopup = document.getElementById('btn-abrir-popup');
+const popupDetalhes = document.getElementById('popup-detalhes');
 
-
-    popupHtml += '<h3 style="margin-top: 20px;">⚠️ Configuração para o Próximo Mês:</h3>';
-    popupHtml += '<div style="background: #f0f8ff; padding: 15px; border-radius: 8px; margin: 10px 0;">';
-    popupHtml += '<p><strong>Próxima função de cada motorista:</strong></p>';
-    popupHtml += '<table style="margin-top: 10px;"><thead><tr><th>Motorista</th><th>Próxima Função</th></tr></thead><tbody>';
-    outrosMotoristas.forEach(m => {
-        const funcaoNome = { 'porta': 'Porta', 'bdd': 'BD/DIV/MN/SL', 'bh': 'BH' };
-        popupHtml += `<tr><td>Motorista ${m}</td><td><strong>${funcaoNome[proximaFuncao[m]]}</strong></td></tr>`;
-    });
-    popupHtml += '</tbody></table>';
-    popupHtml += '<p style="margin-top: 10px; font-size: 12px; color: #666;">💡 <strong>Dica:</strong> Anote essas informações e configure no formulário ao gerar a escala do próximo mês!</p>';
-
-    // Adicionar informação sobre quem deve começar na próxima segunda
-    if (trabalhouSexta !== null) {
-        const proximoMotorista = trabalhouSexta === 1 ? 2 : 1;
-        popupHtml += `<p style="margin-top: 10px; font-size: 12px; color: #e67e22;"><strong>🔄 Próximo mês:</strong> Motorista ${proximoMotorista} deve começar na primeira segunda-feira para manter a alternância.</p>`;
-    }
-
-    popupHtml += '</div>';
-
-    document.getElementById('conteudo-popup').innerHTML = popupHtml;
-    // Salvar estado no localStorage
-    const estadoSalvo = {
-        ano,
-        mes,
-        totalMotoristas,
-        htmlEscala: html,
-        htmlPopup: popupHtml,
-        proximaFuncao,
-        trabalhouSexta,
-        contadorPlantao,
-        plantaoFdsPorMotorista
-    };
-    localStorage.setItem('estadoEscala', JSON.stringify(estadoSalvo));
-
-
-    // Mostrar botão flutuante e abrir popup automaticamente
-    btnAbrirPopup.style.display = 'none';
+btnAbrirPopup.addEventListener('click', () => {
     popupDetalhes.classList.add('open');
-    setTimeout(() => {
-        document.getElementById('submit-loader').style.display = 'none';
-    }, 600);
+    btnAbrirPopup.style.display = 'none';
 });
 
-// Funções auxiliares
-function selecionarMotoristas(lista, excluir, quantidade, pontuacao) {
-    const disponiveis = lista.filter(m => !excluir.includes(m));
-    if (disponiveis.length < quantidade) return disponiveis;
-    disponiveis.sort((a, b) => {
-        if (pontuacao[a] === pontuacao[b]) return a - b;
-        return pontuacao[a] - pontuacao[b];
-    });
-    return disponiveis.slice(0, quantidade);
+function fecharPopup() {
+    popupDetalhes.classList.remove('open');
+    btnAbrirPopup.style.display = 'inline-block';
 }
 
-function atualizarProximaFuncao(motorista, proximaFuncao) {
-    const ciclo = { 'porta': 'bdd', 'bdd': 'bh', 'bh': 'porta' };
-    proximaFuncao[motorista] = ciclo[proximaFuncao[motorista]];
-}
+// ========================================
+// MODAL DE CONFIRMAÇÃO RESET
+// ========================================
 
-function obterProximaFuncaoAposAtual(funcaoAtual) {
-    const ciclo = { 'porta': 'bdd', 'bdd': 'bh', 'bh': 'porta' };
-    return ciclo[funcaoAtual] || 'porta';
-}
-
-const estadoSalvo = localStorage.getItem('estadoEscala');
-if (estadoSalvo) {
-    const estado = JSON.parse(estadoSalvo);
-    document.getElementById('ano').value = estado.ano;
-    document.getElementById('mes').value = estado.mes + 1; // mes salvo começa em 0
-    document.getElementById('motoristas').value = estado.totalMotoristas;
-
-    // Cria os campos de rodízio primeiro
-    criarCamposRodizio();
-
-    // Espera os campos de rodízio aparecerem antes de setar valores
-    setTimeout(() => {
-        Object.keys(estado.proximaFuncao).forEach(m => {
-            const select = document.getElementById(`motorista${m}_proxima`);
-            if (select) {
-                select.value = estado.proximaFuncao[m];
-            }
-        });
-    }, 100);
-}
-
-
-
-function criarCamposRodizio() {
-    const totalMotoristas = parseInt(document.getElementById('motoristas').value);
-    const configDiv = document.getElementById('config-rodizio');
-    if (!configDiv || totalMotoristas < 3) return;
-
-    const outrosMotoristas = Array.from({ length: totalMotoristas - 2 }, (_, i) => i + 3);
-    let html = '<h4>🔄 Configuração do Rodízio (opcional):</h4>';
-    html += '<p style="font-size: 12px; color: #666; margin-bottom: 10px;">Se este não é o primeiro mês, configure onde cada motorista deve continuar:</p>';
-    html += '<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px;">';
-
-    outrosMotoristas.forEach(m => {
-        html += `
-        <div style="padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
-            <label for="motorista${m}_proxima" style="font-weight: bold;">Motorista ${m}:</label>
-            <select id="motorista${m}_proxima" style="width: 100%; margin-top: 4px;">
-                <option value="porta">Porta (padrão)</option>
-                <option value="bdd">BD/DIV/MN/SL</option>
-                <option value="bh">BH</option>
-            </select>
-        </div>
-        `;
-    });
-
-    html += '</div>';
-    html += '<p style="font-size: 11px; color: #888; margin-top: 8px;">💡 Se for o primeiro mês ou não souber, deixe tudo em "Porta (padrão)"</p>';
-    configDiv.innerHTML = html;
-}
-['mes', 'ano', 'motoristas'].forEach(id => {
-    document.getElementById(id).addEventListener('input', () => {
-        const mes = parseInt(document.getElementById('mes').value);
-        const ano = parseInt(document.getElementById('ano').value);
-        const motoristas = parseInt(document.getElementById('motoristas').value);
-
-        if (mes >= 1 && mes <= 12 && ano > 0 && motoristas >= 3) {
-            criarCamposRodizio();
-        }
-    });
+document.getElementById('btn-resetar').addEventListener('click', function () {
+    document.getElementById('modal-confirmacao').style.display = 'flex';
 });
 
-document.getElementById('motoristas').addEventListener('change', criarCamposRodizio);
+document.getElementById('cancelar-reset').addEventListener('click', function () {
+    document.getElementById('modal-confirmacao').style.display = 'none';
+});
+
+document.getElementById('confirmar-reset').addEventListener('click', function () {
+    localStorage.removeItem('estadoEscala');
+    location.reload();
+});
+
+// ========================================
+// CARREGAMENTO DE ESTADO SALVO
+// ========================================
 
 document.addEventListener('DOMContentLoaded', function () {
     const estadoSalvoJSON = localStorage.getItem('estadoEscala');
     if (estadoSalvoJSON) {
         const estadoSalvo = JSON.parse(estadoSalvoJSON);
+
+        // Restaurar valores do formulário
         document.getElementById('ano').value = estadoSalvo.ano;
         document.getElementById('mes').value = estadoSalvo.mes + 1;
         document.getElementById('motoristas').value = estadoSalvo.totalMotoristas;
 
-        criarCamposRodizio();
+        // Restaurar resultados
+        document.getElementById('resultado').innerHTML = estadoSalvo.htmlEscala;
+        document.getElementById('conteudo-popup').innerHTML = estadoSalvo.htmlPopup;
 
-        setTimeout(() => {
-            Object.keys(estadoSalvo.proximaFuncao).forEach(m => {
-                const select = document.getElementById(`motorista${m}_proxima`);
-                if (select) {
-                    select.value = estadoSalvo.proximaFuncao[m];
-                }
-            });
+        // Tornar o botão imprimir visível
+        document.getElementById('btn-imprimir').style.display = 'inline-block';
 
-            document.getElementById('resultado').innerHTML = estadoSalvo.htmlEscala;
-            document.getElementById('conteudo-popup').innerHTML = estadoSalvo.htmlPopup;
-
-            // Tornar o botão imprimir visível
-            document.getElementById('btn-imprimir').style.display = 'inline-block';
-
-            const btnAbrirPopup = document.getElementById('btn-abrir-popup');
-            const popupDetalhes = document.getElementById('popup-detalhes');
-            btnAbrirPopup.style.display = 'none';
-            popupDetalhes.classList.add('open');
-
-        }, 150);
-    } else {
-        if (document.getElementById('motoristas').value) {
-            criarCamposRodizio();
-        }
+        // Abrir popup automaticamente
+        const btnAbrirPopup = document.getElementById('btn-abrir-popup');
+        const popupDetalhes = document.getElementById('popup-detalhes');
+        btnAbrirPopup.style.display = 'none';
+        popupDetalhes.classList.add('open');
     }
 
+    // Event listener para fechar popup
     const fecharBtn = document.getElementById('fechar-popup');
     if (fecharBtn) {
         fecharBtn.addEventListener('click', fecharPopup);
     }
 });
+
+// ========================================
+// FUNÇÕES UTILITÁRIAS ADICIONAIS
+// ========================================
+
+// Função para debug - pode ser removida em produção
+function debugEscala() {
+    if (gerenciador.escalaAnual.length > 0) {
+        console.log('Escala Anual Gerada:', gerenciador.escalaAnual.length, 'dias');
+        console.log('Estado dos Motoristas:', gerenciador.estadoMotoristas);
+        console.log('Estatísticas:', gerenciador.estatisticas);
+    }
+}
+
+// Função para validar integridade da escala (opcional)
+function validarIntegridade() {
+    const problemas = [];
+
+    for (let i = 1; i < gerenciador.escalaAnual.length; i++) {
+        const hoje = gerenciador.escalaAnual[i];
+        const ontem = gerenciador.escalaAnual[i - 1];
+
+        // Verificar se alguém trabalhou no mesmo lugar dois dias seguidos
+        const todasFuncoesHoje = [...hoje.plantao, ...hoje.porta, ...hoje.bh, ...hoje.bdd];
+        const todasFuncoesOntem = [...ontem.plantao, ...ontem.porta, ...ontem.bh, ...ontem.bdd];
+
+        const repeticoes = todasFuncoesHoje.filter(m => todasFuncoesOntem.includes(m));
+        if (repeticoes.length > 0) {
+            problemas.push(`Dia ${hoje.dia}/${hoje.mes + 1}: Motorista(s) ${repeticoes} trabalharam dias consecutivos`);
+        }
+    }
+
+    if (problemas.length > 0) {
+        console.warn('Problemas encontrados na escala:', problemas);
+    } else {
+        console.log('✅ Escala validada - sem problemas de integridade');
+    }
+
+    return problemas;
+}
 
 
 // Botão imprimir
@@ -793,31 +1051,34 @@ document.getElementById('btn-imprimir').addEventListener('click', function () {
     }, 250);
 });
 
-// Botão flutuante para abrir popup
-const btnAbrirPopup = document.getElementById('btn-abrir-popup');
-const popupDetalhes = document.getElementById('popup-detalhes');
+function testarTransicaoAnos() {
+    // Gerar escala de teste
+    const gerenciadorTeste = new GerenciadorEscala();
+    gerenciadorTeste.gerarEscala4Anos(2025, 8);
 
-btnAbrirPopup.addEventListener('click', () => {
-    popupDetalhes.classList.add('open');
-    btnAbrirPopup.style.display = 'none';
-});
+    // Focar nos últimos dias de dezembro e primeiros de janeiro
+    const ultimosDezembro = gerenciadorTeste.escalaAnual.filter(dia =>
+        dia.data.getMonth() === 11 && dia.data.getDate() >= 28
+    );
 
-function fecharPopup() {
-    popupDetalhes.classList.remove('open');
-    btnAbrirPopup.style.display = 'inline-block';  // Reexibe o botão ao fechar
+    const primeirosJaneiro = gerenciadorTeste.escalaAnual.filter(dia =>
+        dia.data.getMonth() === 0 && dia.data.getDate() <= 5 && dia.data.getFullYear() === 2026
+    );
+
+    console.log('🗓️ Últimos dias de dezembro 2025:', ultimosDezembro);
+    console.log('🗓️ Primeiros dias de janeiro 2026:', primeirosJaneiro);
+
+    // Validar transições
+    const problemasTransicao = gerenciadorTeste.validarTransicoes();
+    const problemasViradaAno = problemasTransicao.filter(p =>
+        p.data.includes('01/01/2026') || p.data.includes('02/01/2026')
+    );
+
+    if (problemasViradaAno.length > 0) {
+        console.error('❌ Problemas na virada do ano:', problemasViradaAno);
+    } else {
+        console.log('✅ Transição entre anos validada - sem conflitos!');
+    }
+
+    return { ultimosDezembro, primeirosJaneiro, problemasViradaAno };
 }
-// Abrir modal ao clicar no botão resetar
-document.getElementById('btn-resetar').addEventListener('click', function () {
-    document.getElementById('modal-confirmacao').style.display = 'flex';
-});
-
-// Cancelar a ação
-document.getElementById('cancelar-reset').addEventListener('click', function () {
-    document.getElementById('modal-confirmacao').style.display = 'none';
-});
-
-// Confirmar a ação
-document.getElementById('confirmar-reset').addEventListener('click', function () {
-    localStorage.removeItem('estadoEscala');
-    location.reload();
-});
